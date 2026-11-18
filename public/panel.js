@@ -126,29 +126,33 @@ ${urlsPanel('bracket', [['Draw next player', 'draw'], ['Show bracket', 'bracket'
 <div class="panel"><h2>All-in-one overlay</h2>${urlRow('OBS overlay', ovUrl('all'))}</div>`;
     },
     connect() {
-      const rows = [['agent', 'Roll agent'], ['sens', 'Roll sens'], ['crosshair', 'Roll crosshair'], ['strat', 'Spin strat roulette'], ['draw', 'Bracket: draw next player'], ['bracket', 'Bracket: show on overlay'], ['hide', 'Hide overlay'], ['reset', 'Bracket: reset']];
-      return `<h1>Chat & Streamer.bot</h1><p class="m">Every tool has a trigger link. Calling it rolls the tool and shows it on your overlay, so chat commands and channel point redeems work without this page being open.</p>
-<div class="notice"><b>Keep these links private.</b> Anyone with a trigger link can fire your overlays. Limit commands to mods or use channel point redeems, otherwise chat can spam them.</div>
-<div class="panel"><h2>Streamer.bot</h2>
+      const main = [['agent', 'Roll agent'], ['sens', 'Roll sens'], ['crosshair', 'Roll crosshair'], ['strat', 'Spin strat roulette'], ['draw', 'Bracket: draw next player']];
+      const more = [['bracket', 'Bracket: show on overlay'], ['hide', 'Hide overlay'], ['reset', 'Bracket: reset']];
+      const sum = 'style="cursor:pointer;color:var(--red);font-weight:700;margin-top:10px"';
+      return `<h1>Chat & Streamer.bot</h1>
+<p class="m">Every tool has a trigger link. Calling it rolls the tool and shows it on your overlay, so commands and channel point redeems work without this page open. Keep the links private: anyone with one can fire your overlays.</p>
+<div class="panel"><h2>Streamer.bot setup</h2>
  <ol class="steps">
   <li>Create an Action, for example "Valo Agent".</li>
-  <li>Add the sub-action <b>Fetch URL</b> (in the sub-action menu under Core → Network, if you can't find it search for "Fetch URL"). Paste the trigger link for that tool from the list below.</li>
+  <li>Add the sub-action <b>Fetch URL</b> (Core → Network) and paste the trigger link for that tool from below.</li>
   <li>Add a trigger: <b>Core → Commands → Command</b> (for example <code>!agent</code>) or <b>Twitch → Channel Reward → Reward Redeemed</b>.</li>
   <li>Right-click the action and choose <b>Test Trigger</b>. Your overlay should react.</li>
- </ol></div>
-<div class="panel"><h2>Announce the result in chat</h2>
- <p class="m">Add <code>?text=1</code> to a trigger link and it answers with just the result, for example "Jett", so your bot can post it in chat.</p>
- <ol class="steps">
-  <li>In the <b>Fetch URL</b> sub-action, paste the "chat answer" link from the list below into the <b>URL</b> box. Then type a name of your choice into the <b>Variable Name</b> box, for example <code>agentResult</code>, without percent signs. Fetch URL saves the answer under that name. Leave both switches (Parse Results as JSON and Auto-Type) off.</li>
-  <li>Add a <b>Core → Delay</b> sub-action after it, so chat doesn't spoil the animation: about <b>2000 ms</b> for agent, sens, crosshair and strat, and about <b>7000 ms</b> for the bracket draw (the wheel spins for about 7 seconds).</li>
-  <li>Add <b>Twitch → Chat → Send Message</b> after that, for example: <code>@%user% your agent is %agentResult%</code>. Write the variable name between percent signs, spelled exactly like in the <b>Variable Name</b> box. If it doesn't match, the message comes out blank.</li>
  </ol>
- ${[['agent', 'Agent'], ['sens', 'Sens'], ['crosshair', 'Crosshair'], ['strat', 'Strat roulette'], ['draw', 'Bracket draw (the drawn player)']].map(([t, l]) => urlRow(l + ' (chat answer)', trUrl(t) + '?text=1')).join('')}
+ <details><summary ${sum}>Optional: post the result in chat</summary>
+  <p class="m">The link answers with the result as plain text, for example "Jett".</p>
+  <ol class="steps">
+   <li>In Fetch URL, type a name in the <b>Variable Name</b> box, for example <code>agentResult</code>.</li>
+   <li>Add <b>Core → Delay</b> (about 2000 ms, or 7000 ms for the bracket draw) so chat doesn't spoil the animation.</li>
+   <li>Add <b>Twitch → Chat → Send Message</b>: <code>@%user% your agent is %agentResult%</code>. The name must match the Variable Name exactly.</li>
+  </ol>
+ </details>
 </div>
-<div class="panel"><h2>Trigger links</h2>${rows.map(([t, l]) => urlRow(l, trUrl(t))).join('')}
- <div class="m" style="margin-top:8px"><b>Chat bots:</b> add <code>?text=1</code> to a link and it answers with plain text (for example "Jett"). Nightbot, StreamElements and Fossabot custom commands can fetch a link and post the answer. The syntax differs per bot, so check your bot's docs.</div></div>
-<div class="panel"><h2>Links</h2>${urlRow('Your control link', ORIGIN + BASE)}
- <div class="row"><button class="g" data-rotate="1">Reset overlay links</button><small>Use this if an overlay link leaked. You'll need to paste the new overlay links into OBS. Control and trigger links stay the same.</small></div></div>`;
+<div class="panel"><h2>Trigger links</h2>${main.map(([t, l]) => urlRow(l, trUrl(t))).join('')}
+ <details><summary ${sum}>More links</summary>${more.map(([t, l]) => urlRow(l, trUrl(t))).join('')}</details>
+ <div class="m" style="margin-top:10px">Other chat bots (Nightbot, StreamElements, Fossabot) can fetch these links in a custom command. The syntax differs per bot.</div>
+</div>
+<div class="panel"><h2>Your links</h2>${urlRow('Control link', ORIGIN + BASE)}
+ <div class="row"><button class="g" data-rotate="1">Reset overlay links</button><small>Use this if an overlay link leaked. You'll need to paste the new overlay links into OBS.</small></div></div>`;
     }
   };
 
