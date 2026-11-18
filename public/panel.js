@@ -1,246 +1,309 @@
-(() => {
-  const $ = s => document.querySelector(s);
-  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const ID = location.pathname.match(/^\/s\/([\w-]+)/)[1], BASE = '/s/' + ID, ORIGIN = location.origin;
-  const POS = [['top-left', 'Top left'], ['top-right', 'Top right'], ['bottom-left', 'Bottom left'], ['bottom-right', 'Bottom right'], ['center', 'Center']];
-  const FONTS = [['system', 'Clean (system)'], ['impact', 'Bold condensed'], ['mono', 'Monospace'], ['serif', 'Serif']];
-  const PRESETS = [['Valorant', '#ff4655', '#0f1923', '#ece8e1'], ['Cyan', '#00e5ff', '#0b1a22', '#e8fbff'], ['Violet', '#b36bff', '#14101f', '#f1e9ff'], ['Lime', '#9dff3d', '#10170b', '#f2ffe0'], ['Light', '#d6336c', '#ffffff', '#1b1b1b']];
-  const NAV = [['home', 'Home'], ['bracket', 'Bracket'], ['agent', 'Agent'], ['sens', 'Sens'], ['crosshair', 'Crosshair'], ['strat', 'Strat'], ['style', 'Style'], ['connect', 'Chat & Streamer.bot']];
-  let P = null, S = null, cur = 'home', saveTimer = null, dirty = false;
+'use strict';
+/* ValoTools server. No dependencies, needs Node 18+.
+ * Every streamer gets a "space" with two secret tokens:
+ *   id  -> control link   /s/<id>            (settings, panel, trigger URLs)
+ *   ov  -> overlay link   /o/<ov>/<tool>     (read-only, safe to put in OBS)
+ * `owner` is reserved on each space so accounts can be added later without
+ * changing the URLs people already use. */
+const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
+const { gzipSync } = require('zlib');
 
-  /* ---------- helpers ---------- */
-  function note(t, ms) { const e = $('#saved'); e.textContent = t; clearTimeout(note.t); note.t = setTimeout(() => { e.textContent = ''; }, ms || 2000); }
-  async function api(method, url, body) {
-    const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j.error || 'Request failed (' + r.status + ')');
-    return j;
+const PORT = +process.env.PORT || 3000;
+const DATA = process.env.DATA_DIR || path.join(__dirname, 'data');
+const PUB = path.join(__dirname, 'public');
+const MAX_SPACES = +process.env.MAX_SPACES || 10000;
+const TRUST_PROXY = process.env.TRUST_PROXY === '1';
+const STATIC = new Set(['style.css', 'panel.js', 'overlay.js', 'overlay.css']);
+fs.mkdirSync(DATA, { recursive: true });
+
+const rid = n => crypto.randomBytes(n).toString('base64url');
+const pick = a => a[crypto.randomInt(a.length)];
+const rnd = (a, b) => a + Math.random() * (b - a);
+
+/* ---------- defaults + validation ---------- */
+const AGENTS = 'Astra,Breach,Brimstone,Chamber,Clove,Cypher,Deadlock,Fade,Gekko,Harbor,Iso,Jett,KAY/O,Killjoy,Neon,Omen,Phoenix,Raze,Reyna,Sage,Skye,Sova,Tejo,Veto,Viper,Vyse,Waylay,Yoru'.split(',');
+const STRATS = ['Pistols only until you win a round', 'Everyone rushes the same site', 'No abilities until the spike is planted', 'Only Sheriff, Ghost and Classic', 'Walk only: no running', 'Crouch while shooting', 'Full stack one site, no rotations', 'Save every round and buy Operators', 'No callouts, only emotes and pings', 'Knife out when not in a fight', 'Play the opposite of your main role'];
+const POS = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center'];
+const FONTS = ['system', 'impact', 'mono', 'serif'];
+const defaults = () => ({
+  theme: { accent: '#ff4655', bg: '#0f1923', text: '#ece8e1', font: 'system' },
+  duration: 8,
+  position: { agent: 'bottom-left', sens: 'bottom-left', crosshair: 'bottom-left', strat: 'bottom-left' },
+  agents: [...AGENTS], strats: [...STRATS],
+  sens: { min: 0.2, max: 0.7, decimals: 3 },
+  names: []
+});
+const hex = v => typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v);
+const num = (v, a, b, d) => { v = +v; return Number.isFinite(v) ? Math.min(b, Math.max(a, v)) : d; };
+const list = (v, max, len) => Array.isArray(v) ? v.map(x => String(x).trim().slice(0, len)).filter(Boolean).slice(0, max) : null;
+
+function sanitize(inp, cur) {
+  const s = JSON.parse(JSON.stringify(cur));
+  if (!inp || typeof inp !== 'object') return s;
+  const t = inp.theme || {};
+  for (const k of ['accent', 'bg', 'text']) if (hex(t[k])) s.theme[k] = t[k].toLowerCase();
+  if (FONTS.includes(t.font)) s.theme.font = t.font;
+  if ('duration' in inp) s.duration = num(inp.duration, 2, 60, s.duration);
+  if (inp.position && typeof inp.position === 'object')
+    for (const k of Object.keys(s.position)) if (POS.includes(inp.position[k])) s.position[k] = inp.position[k];
+  let l;
+  if ((l = list(inp.agents, 100, 40))) s.agents = l;
+  if ((l = list(inp.strats, 100, 120))) s.strats = l;
+  if ((l = list(inp.names, 32, 30))) s.names = l;
+  if (inp.sens && typeof inp.sens === 'object') {
+    let a = num(inp.sens.min, 0.001, 10, s.sens.min), b = num(inp.sens.max, 0.001, 10, s.sens.max);
+    if (a > b) [a, b] = [b, a];
+    s.sens = { min: a, max: b, decimals: Math.round(num(inp.sens.decimals, 0, 4, s.sens.decimals)) };
   }
-  async function doSave() { dirty = false; try { await api('PUT', `/api/s/${ID}/settings`, S); note('Saved ✓'); } catch (e) { note(e.message, 4000); } }
-  function queueSave() { dirty = true; note('Saving…'); clearTimeout(saveTimer); saveTimer = setTimeout(doSave, 500); }
-  async function flush() { if (dirty) { clearTimeout(saveTimer); await doSave(); } }
-  async function trig(tool, body) { await flush(); try { return await api('POST', `/api/t/${ID}/${tool}`, body || {}); } catch (e) { note(e.message, 4000); } }
-  const get = (o, p) => p.split('.').reduce((a, k) => a && a[k], o);
-  const set = (o, p, v) => { const ks = p.split('.'), l = ks.pop(); ks.reduce((a, k) => a[k], o)[l] = v; };
-  function copy(t, btn) {
-    const ok = () => { const o = btn.textContent; btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = o; }, 1200); };
-    const fb = () => { const a = document.createElement('textarea'); a.value = t; document.body.appendChild(a); a.select(); try { document.execCommand('copy'); ok(); } catch { /* ignore */ } a.remove(); };
-    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(ok, fb); else fb();
+  return s;
+}
+const ovSettings = s => ({ theme: s.theme, duration: s.duration, position: s.position });
+
+/* ---------- storage ---------- */
+const spaces = new Map(), byOv = new Map();
+for (const f of fs.readdirSync(DATA)) {
+  if (!/^[\w-]+\.json$/.test(f)) continue;
+  try { const sp = JSON.parse(fs.readFileSync(path.join(DATA, f), 'utf8')); spaces.set(sp.id, sp); byOv.set(sp.ov, sp); }
+  catch { console.error('skipping unreadable', f); }
+}
+function save(sp) {
+  const f = path.join(DATA, sp.id + '.json'), t = f + '.tmp';
+  fs.writeFileSync(t, JSON.stringify(sp, (k, v) => k[0] === '_' ? undefined : v));
+  fs.renameSync(t, f);
+}
+
+/* ---------- live events (SSE) ---------- */
+const subs = new Map();
+function subscribe(key, req, res) {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  res.write('retry: 2000\n\n');
+  if (!subs.has(key)) subs.set(key, new Set());
+  subs.get(key).add(res);
+  req.on('close', () => { const s = subs.get(key); if (s) { s.delete(res); if (!s.size) subs.delete(key); } });
+}
+const emitTo = (key, msg) => { const d = 'data: ' + JSON.stringify(msg) + '\n\n'; for (const r of subs.get(key) || []) r.write(d); };
+const emit = (sp, msg) => { emitTo(sp.id, msg); emitTo(sp.ov, msg); };
+setInterval(() => { for (const s of subs.values()) for (const r of s) r.write(': ka\n\n'); }, 25000).unref();
+
+/* ---------- bracket ---------- */
+function prop(R) { R.forEach((r, ri) => r.forEach((x, mi) => { if (x.w && R[ri + 1]) R[ri + 1][mi >> 1].p[mi & 1] = x.w; })); }
+function mk(order, total) {
+  let N = 2; while (N < total) N *= 2;
+  const by = N - total, s = Array(N).fill(null);
+  order.forEach((p, i) => { s[i < by ? 2 * i : 2 * by + (i - by)] = p; });
+  const R = []; for (let m = N / 2; m >= 1; m /= 2) R.push(Array.from({ length: m }, () => ({ p: [null, null], w: null })));
+  R[0].forEach((x, i) => { x.p = [s[2 * i], s[2 * i + 1]]; if (i < by && x.p[0]) x.w = x.p[0]; });
+  prop(R); return R;
+}
+const brState = sp => ({ bracket: sp.bracket, draw: { n: sp.draw.all.length, k: sp.draw.order.length, until: sp._pending ? sp._pending.until : 0 } });
+const brEvent = (sp, show) => ({ t: 'bracket', show, ...brState(sp) });
+const DRAW_MS = 6800;
+
+function doDraw(sp) {
+  const d = sp.draw;
+  if (sp._pending && sp._pending.until > Date.now()) return { err: 'A draw is already in progress', code: 409 };
+  if (!d.all.length || d.order.length >= d.all.length) {
+    const nm = sp.settings.names;
+    if (nm.length < 2 || nm.length > 32) return { err: 'Add 2 to 32 players first', code: 400 };
+    d.all = [...nm]; d.order = []; sp.bracket = mk([], nm.length);
   }
+  const N = d.all.length, i = d.order.length;
+  let K = 2; while (K < N) K *= 2;
+  const by = K - N;
+  const rest = d.all.map((_, j) => j).filter(j => !d.order.includes(j)), k = pick(rest);
+  const prev = i ? d.all[d.order[i - 1]] : '';
+  const sub = i < by ? `Match ${i + 1} · bye to round 2` : `Match ${by + ((i - by) >> 1) + 1} · ${(i - by) % 2 ? 'vs ' + prev : 'waiting for an opponent'}`;
+  const aa = 360 / rest.length, deg = 360 * 6 - (rest.indexOf(k) + 0.5) * aa + (Math.random() - 0.5) * aa * 0.7;
+  const r = { k: 'bracket', wheel: 1, lbl: `Draw ${i + 1} of ${N}`, big: d.all[k], list: rest.map(j => d.all[j]), sub, deg, ms: 0, dur: DRAW_MS };
+  sp._pending = { k, until: Date.now() + DRAW_MS };
+  emit(sp, { t: 'show', r });
+  setTimeout(() => {
+    sp._pending = null; d.order.push(k);
+    sp.bracket = mk(d.order.map(j => d.all[j]), N);
+    save(sp); emit(sp, brEvent(sp, true));
+  }, DRAW_MS);
+  return { ok: 1, text: r.big };
+}
 
-  /* ---------- building blocks ---------- */
-  const preview = tool => `<div class="pvwrap"><iframe src="/o/${P.ov}/${tool}" title="Overlay preview"></iframe></div>`;
-  const urlRow = (label, url) => `<div class="urlrow"><b>${esc(label)}</b><code>${esc(url)}</code><button class="g" data-copy="${esc(url)}">Copy</button></div>`;
-  const ovUrl = tool => `${ORIGIN}/o/${P.ov}/${tool}`;
-  const trUrl = tool => `${ORIGIN}/api/t/${ID}/${tool}`;
-  const posSel = path => `<select data-bind="${path}">${POS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>`;
-  const fontSel = () => `<select data-bind="theme.font">${FONTS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>`;
-  const urlsPanel = (tool, extra) => `<div class="panel"><h2>Links</h2>${urlRow('OBS overlay (Browser Source)', ovUrl(tool))}<div class="m">Add it in OBS as a Browser Source, 1920×1080.</div>${(extra || []).map(([l, t]) => urlRow(l, trUrl(t))).join('')}</div>`;
+/* ---------- crosshair ---------- */
+const COL = 8;
+function xhair() {
+  const p = { c: Math.random() * COL | 0, o: Math.random() < 0.6 ? 1 : 0, d: Math.random() < 0.3 ? 1 : 0, z: 1 + (Math.random() * 3 | 0), t: 1 + (Math.random() * 3 | 0), l: 2 + (Math.random() * 8 | 0), of: Math.random() * 6 | 0 };
+  return { xh: p, code: `0;P;c;${p.c};o;${p.o};d;${p.d};z;${p.z};f;0;0t;${p.t};0l;${p.l};0o;${p.of};0a;1;0f;0;1b;0` };
+}
 
-  function listTool(tool, title, desc, key, label, rollLabel) {
-    return `<h1>${title}</h1><p class="m">${desc}</p>
-<div class="two"><div>${preview(tool)}</div><div class="panel stack">
- <button class="cta" data-t="${tool}">${rollLabel}</button>
- <label>${label} (one per line)<textarea rows="10" data-bind="${key}" data-type="list"></textarea></label>
- <div class="row"><label>Overlay position ${posSel('position.' + tool)}</label><button class="g" data-resetlist="${key}">Reset list to default</button></div>
-</div></div>
-${urlsPanel(tool, [['Chat / redeem trigger', tool]])}`;
-  }
-
-  function matchesHtml() {
-    const B = P.bracket;
-    if (!B) return '<div class="m">No bracket yet. Add players, then press Draw.</div>';
-    if (P.draw.k < P.draw.n) return '<div class="m">Matches unlock once every player has been drawn.</div>';
-    const L = B.length;
-    if (B[L - 1][0].w) return `<div class="big-res">🏆 ${esc(B[L - 1][0].w)}</div><div class="m">Press Reset to start a new tournament.</div>`;
-    for (let ri = 0; ri < L; ri++) {
-      const real = B[ri].map((x, mi) => ({ x, mi })).filter(o => o.x.p[0] && o.x.p[1]);
-      if (real.some(o => !o.x.w)) {
-        return `<div class="m">${ri === L - 1 ? 'Final' : 'Round ' + (ri + 1)} · click the winner of each match (click the other player to change it)</div>` +
-          real.map(o => `<div class="mrow">${[0, 1].map(s => `<button class="${o.x.w === o.x.p[s] ? '' : 'g'}" data-win="${ri},${o.mi},${s}">${esc(o.x.p[s])}</button>`).join('<span>vs</span>')}</div>`).join('');
-      }
+/* ---------- triggers (used by the panel AND by chat bots / Streamer.bot) ---------- */
+function trigger(sp, tool, body) {
+  const s = sp.settings;
+  switch (tool) {
+    case 'agent': case 'strat': {
+      const L = tool === 'agent' ? s.agents : s.strats;
+      if (!L.length) return { err: 'That list is empty', code: 400 };
+      const r = { k: tool, lbl: tool === 'agent' ? 'Your agent' : 'Strat roulette', big: pick(L), list: L, small: tool === 'strat' ? 1 : 0 };
+      emit(sp, { t: 'show', r }); return { ok: 1, text: r.big };
     }
-    return '';
-  }
-
-  /* ---------- views ---------- */
-  const views = {
-    home() {
-      return `<h1>Your space</h1>
-<div class="notice"><b>This page is your private control link.</b> Bookmark it. Anyone who has it can control your overlays, so don't share it or show it on stream.
- ${urlRow('Control link', ORIGIN + BASE)}</div>
-<div class="tiles">
- <a class="tile" href="${BASE}/bracket" data-go><i>🏆</i><b>1v1 Bracket</b><span>Lucky wheel draw and live bracket</span></a>
- <a class="tile" href="${BASE}/agent" data-go><i>🎭</i><b>Random agent</b><span>Spin for an agent</span></a>
- <a class="tile" href="${BASE}/sens" data-go><i>🖱️</i><b>Random sens</b><span>Roll an in-game sens</span></a>
- <a class="tile" href="${BASE}/crosshair" data-go><i>🎯</i><b>Random crosshair</b><span>Spin and copy a code</span></a>
- <a class="tile" href="${BASE}/strat" data-go><i>🎲</i><b>Strat roulette</b><span>Chaos challenges</span></a>
- <a class="tile" href="${BASE}/style" data-go><i>🎨</i><b>Overlay style</b><span>Colors, font, timing</span></a>
- <a class="tile" href="${BASE}/connect" data-go><i>🔌</i><b>Chat & Streamer.bot</b><span>Commands and channel point redeems</span></a>
-</div>
-<div class="panel"><h2>Overlays for OBS</h2><div class="m">One Browser Source (1920×1080) per overlay. Put the bracket on its own scene.</div>
- ${urlRow('Bracket + draw wheel', ovUrl('bracket'))}${urlRow('Agent', ovUrl('agent'))}${urlRow('Sens', ovUrl('sens'))}${urlRow('Crosshair', ovUrl('crosshair'))}${urlRow('Strat roulette', ovUrl('strat'))}${urlRow('All tools in one', ovUrl('all'))}
-</div>`;
-    },
-    bracket() {
-      return `<h1>1v1 Bracket</h1>
-<ol class="steps m"><li>Type the players below, one per line (2 to 32).</li><li>Press the draw button once for every player. A lucky wheel picks each one.</li><li>Click the winner of each match here, and the overlay updates by itself.</li></ol>
-<div class="two"><div>${preview('bracket')}<p class="m">The bracket is a full-screen scene. Give it its own scene in OBS.</p></div>
-<div class="panel stack">
- <label>Players<textarea rows="8" data-bind="names" data-type="list"></textarea></label>
- <div class="row"><button class="cta" id="bdraw" data-t="draw">Draw first player</button><button class="g" id="breset" data-t="reset" data-confirm="Clear the bracket and start over?">Reset</button><small id="bstat"></small></div>
- <div class="row"><button class="g" data-t="bracket">Show bracket</button><button class="g" data-t="hide">Hide overlay</button></div>
- <h2>Matches</h2><div id="bmatches"></div>
-</div></div>
-${urlsPanel('bracket', [['Draw next player', 'draw'], ['Show bracket', 'bracket'], ['Reset bracket', 'reset']])}`;
-    },
-    agent: () => listTool('agent', 'Random agent', 'Spin for an agent. Edit the list when new agents release.', 'agents', 'Agents', '🎭 Roll agent'),
-    strat: () => listTool('strat', 'Strat roulette', 'Your own list of challenges for the round.', 'strats', 'Strats', '🎲 Spin'),
-    sens() {
-      return `<h1>Random sens</h1><p class="m">Rolls an in-game sensitivity between your min and max.</p>
-<div class="two"><div>${preview('sens')}</div><div class="panel stack">
- <button class="cta" data-t="sens">🖱️ Roll sens</button>
- <div class="row"><span class="big-res" data-live="sens">–</span><button class="g" data-last="sens" disabled>Copy sens</button></div>
- <div class="row"><label>Min <input type="number" step="0.01" min="0.001" data-bind="sens.min" data-type="num"></label><label>Max <input type="number" step="0.01" min="0.001" data-bind="sens.max" data-type="num"></label><label>Decimals <input type="number" min="0" max="4" data-bind="sens.decimals" data-type="num"></label></div>
- <div class="row"><label>Overlay position ${posSel('position.sens')}</label></div>
-</div></div>${urlsPanel('sens', [['Chat / redeem trigger', 'sens']])}`;
-    },
-    crosshair() {
-      return `<h1>Random crosshair</h1><p class="m">Spins through crosshairs and lands on one. Paste the code in Valorant: Settings → Crosshair → Import Profile Code. If a code doesn't import, roll again.</p>
-<div class="two"><div>${preview('crosshair')}</div><div class="panel stack">
- <button class="cta" data-t="crosshair">🎯 Roll crosshair</button>
- <div class="row"><code data-live="crosshair" style="flex:1">–</code><button class="g" data-last="crosshair" disabled>Copy code</button></div>
- <div class="row"><label>Overlay position ${posSel('position.crosshair')}</label></div>
-</div></div>${urlsPanel('crosshair', [['Chat / redeem trigger', 'crosshair']])}`;
-    },
-    style() {
-      return `<h1>Overlay style</h1><p class="m">Applies to every overlay, live.</p>
-<div class="two"><div>${preview('all')}</div><div class="panel stack">
- <div class="row"><label>Accent <input type="color" data-bind="theme.accent"></label><label>Background <input type="color" data-bind="theme.bg"></label><label>Text <input type="color" data-bind="theme.text"></label></div>
- <div class="row">${PRESETS.map(p => `<button class="g" data-preset="${p[1]},${p[2]},${p[3]}">${p[0]}</button>`).join('')}</div>
- <div class="row"><label>Font ${fontSel()}</label><label>Cards stay for <input type="number" min="2" max="60" data-bind="duration" data-type="num"> seconds</label></div>
- <h2>Try it</h2>
- <div class="cgrid"><button data-t="agent">Agent</button><button data-t="sens">Sens</button><button data-t="crosshair">Crosshair</button><button data-t="strat">Strat</button><button class="g" data-t="hide">Hide</button></div>
- <div class="m">Each card's position is set on its own page.</div>
-</div></div>
-<div class="panel"><h2>All-in-one overlay</h2>${urlRow('OBS overlay', ovUrl('all'))}</div>`;
-    },
-    connect() {
-      const main = [['agent', 'Roll agent'], ['sens', 'Roll sens'], ['crosshair', 'Roll crosshair'], ['strat', 'Spin strat roulette'], ['draw', 'Bracket: draw next player']];
-      const more = [['bracket', 'Bracket: show on overlay'], ['hide', 'Hide overlay'], ['reset', 'Bracket: reset']];
-      const sum = 'style="cursor:pointer;color:var(--red);font-weight:700;margin-top:10px"';
-      return `<h1>Chat & Streamer.bot</h1>
-<p class="m">Every tool has a trigger link. Calling it rolls the tool and shows it on your overlay, so commands and channel point redeems work without this page open. Keep the links private: anyone with one can fire your overlays.</p>
-<div class="panel"><h2>Streamer.bot setup</h2>
- <p style="margin-top:0"><b>Quick start:</b> import ready-made actions with your links already filled in.</p>
- <div class="row"><button data-pack="copy">Copy import code</button><a href="/api/s/${ID}/streamerbot?base=${encodeURIComponent(ORIGIN)}&download=1" download>Download as .txt</a></div>
- <ol class="steps">
-  <li>In Streamer.bot click <b>Import</b> (at the top), paste the code and click Import.</li>
-  <li>Chat commands are included: <code>!agent</code>, <code>!sens</code>, <code>!crosshair</code> and <code>!strat</code>, open to everyone. Set cooldowns or limit them to mods in the <b>Commands</b> tab. The bracket actions have no command, so run them from this panel, or add your own trigger such as <b>Twitch → Channel Reward → Reward Redeemed</b>.</li>
-  <li>Right-click an action and choose <b>Test Trigger</b>. Your overlay should react.</li>
-  <li>Optional: each action has a Delay and a Send Message step that are switched off. Tick them to post the result in chat.</li>
- </ol>
- <details><summary ${sum}>Set up by hand instead</summary>
-  <ol class="steps">
-   <li>Create an Action, for example "Valo Agent".</li>
-   <li>Add the sub-action <b>Fetch URL</b> (Core → Network) and paste the trigger link for that tool from below.</li>
-   <li>Add a trigger, then right-click the action and choose <b>Test Trigger</b>.</li>
-   <li>To post the result in chat: type a name in the <b>Variable Name</b> box of Fetch URL, for example <code>agentResult</code>. Add <b>Core → Delay</b> (about 2000 ms, or 7000 ms for the bracket draw), then <b>Twitch → Chat → Send Message</b> with <code>@%user% your agent is %agentResult%</code>. The name must match exactly.</li>
-  </ol>
- </details>
-</div>
-<div class="panel"><h2>Trigger links</h2>${main.map(([t, l]) => urlRow(l, trUrl(t))).join('')}
- <details><summary ${sum}>More links</summary>${more.map(([t, l]) => urlRow(l, trUrl(t))).join('')}</details>
- <div class="m" style="margin-top:10px">Other chat bots (Nightbot, StreamElements, Fossabot) can fetch these links in a custom command. The syntax differs per bot.</div>
-</div>
-<div class="panel"><h2>Your links</h2>${urlRow('Control link', ORIGIN + BASE)}
- <div class="row"><button class="g" data-rotate="1">Reset overlay links</button><small>Use this if an overlay link leaked. You'll need to paste the new overlay links into OBS.</small></div></div>`;
+    case 'sens': {
+      const big = rnd(s.sens.min, s.sens.max).toFixed(s.sens.decimals);
+      sp.last.sens = big; save(sp);
+      emit(sp, { t: 'show', r: { k: 'sens', lbl: 'Random sens', big } }); return { ok: 1, text: big };
     }
+    case 'crosshair': {
+      const x = xhair(), frames = Array.from({ length: 14 }, xhair);
+      sp.last.crosshair = x.code; save(sp);
+      emit(sp, { t: 'show', r: { k: 'crosshair', lbl: 'Random crosshair', xh: x.xh, code: x.code, frames } }); return { ok: 1, text: x.code };
+    }
+    case 'bracket':
+      if (!sp.bracket) return { err: 'No bracket yet, press Draw first', code: 409 };
+      emit(sp, brEvent(sp, true)); return { ok: 1, text: 'ok' };
+    case 'hide': emit(sp, { t: 'hide' }); return { ok: 1, text: 'ok' };
+    case 'draw': return doDraw(sp);
+    case 'reset':
+      if (sp._pending && sp._pending.until > Date.now()) return { err: 'A draw is in progress', code: 409 };
+      sp.draw = { all: [], order: [] }; sp.bracket = null; save(sp);
+      emit(sp, brEvent(sp, false)); emit(sp, { t: 'hide' }); return { ok: 1, text: 'ok' };
+    case 'win': {
+      const B = sp.bracket, d = sp.draw;
+      if (!B || !d.all.length || d.order.length < d.all.length) return { err: 'Finish the draw first', code: 409 };
+      const r = +body.r, m = +body.m, si = +body.s;
+      const x = B[r] && B[r][m];
+      if (!x || !(si === 0 || si === 1) || !x.p[0] || !x.p[1]) return { err: 'No such match', code: 400 };
+      const next = B[r + 1] && B[r + 1][m >> 1];
+      if (next && next.w) return { err: 'A later match is already decided', code: 409 };
+      x.w = x.p[si]; prop(B); save(sp); emit(sp, brEvent(sp, true)); return { ok: 1, text: x.w };
+    }
+    default: return { err: 'Unknown tool', code: 404 };
+  }
+}
+
+/* ---------- Streamer.bot import pack ----------
+ * Format copied from a real Streamer.bot export: base64("SBAE" + gzip(json)).
+ * Sub-action types: 1007 = Fetch URL, 1002 = Delay, 10 = Twitch chat message.
+ * Trigger type 401 = Command (points at an entry in data.commands). */
+function sbPack(base, id) {
+  const Q = '00000000-0000-0000-0000-000000000000';
+  const sub = (type, fields, index, enabled = true) => ({ ...fields, id: crypto.randomUUID(), weight: 0.0, type, parentId: null, enabled, index });
+  const commands = [];
+  const MODS = new Set(['!draw', '!bracket', '!hide', '!reset']); // mods-only commands
+  const action = (name, subActions, cmd) => {
+    const triggers = [];
+    if (cmd) {
+      const cid = crypto.randomUUID();
+      commands.push({ id: cid, name, enabled: true, include: false, mode: 0, command: cmd, regexExplicitCapture: false, location: 0, ignoreBotAccount: true, ignoreInternal: true, sources: 1, persistCounter: false, persistUserCounter: false, caseSensitive: false, globalCooldown: 0, userCooldown: 0, group: 'ValoTools', grantType: 0, permittedUsers: [], permittedGroups: MODS.has(cmd) ? ['Moderators'] : [] });
+      triggers.push({ commandId: cid, id: crypto.randomUUID(), type: 401, enabled: true, exclusions: [] });
+    }
+    return { id: crypto.randomUUID(), queue: Q, enabled: true, excludeFromHistory: false, excludeFromPending: false, name, group: 'ValoTools', alwaysRun: false, randomAction: false, concurrent: false, triggers, subActions, collapsedGroups: [] };
   };
+  const fetchSub = (tool, v, i) => sub(1007, { url: `${base}/api/t/${id}/${tool}`, variableName: v, headers: {}, parseAsJson: false, autoType: false }, i);
+  const chat = [
+    ['Valo Agent', 'agent', 'agentResult', '@%user% your agent is %agentResult%', 2000, '!agent'],
+    ['Valo Sens', 'sens', 'sensResult', '@%user% your sens is %sensResult%', 2000, '!sens'],
+    ['Valo Crosshair', 'crosshair', 'crosshairResult', '@%user% your crosshair code is %crosshairResult%', 2000, '!crosshair'],
+    ['Valo Strat Roulette', 'strat', 'stratResult', '@%user% your strat is %stratResult%', 2000, '!strat'],
+    ['Valo Bracket Draw', 'draw', 'drawResult', '%drawResult% was drawn!', 7000, '!draw']
+  ].map(([name, tool, v, text, ms, cmd]) => action(name, [
+    fetchSub(tool, v, 0),
+    sub(1002, { value: String(ms), maxValue: null, random: false }, 1, false),
+    sub(10, { text, pin: false, pinToStreamEnd: false, useBot: true, fallback: true }, 2, false)
+  ], cmd));
+  const plain = [['Valo Show Bracket', 'bracket', '!bracket'], ['Valo Hide Overlay', 'hide', '!hide'], ['Valo Reset Bracket', 'reset', '!reset']]
+    .map(([name, tool, cmd]) => action(name, [fetchSub(tool, 'valoResult', 0)], cmd));
+  const pack = {
+    meta: { name: 'ValoTools', author: 'ValoTools', version: '1.0.0', description: 'Actions for ValoTools overlays', autoRunAction: null, minimumVersion: null },
+    data: { actions: [...chat, ...plain], queues: [], commands, websocketServers: [], websocketClients: [], timers: [] },
+    version: 24, exportedFrom: '1.0.7', minimumVersion: '1.0.0-alpha.1'
+  };
+  return Buffer.concat([Buffer.from('SBAE'), gzipSync(JSON.stringify(pack))]).toString('base64');
+}
 
-  /* ---------- render ---------- */
-  function bind() {
-    document.querySelectorAll('#view [data-bind]').forEach(el => {
-      const path = el.dataset.bind, type = el.dataset.type, v = get(S, path);
-      el.value = type === 'list' ? (v || []).join('\n') : v;
-      el.addEventListener('input', () => {
-        let x = el.value;
-        if (type === 'list') x = x.split('\n').map(s => s.trim()).filter(Boolean);
-        else if (type === 'num') { x = +x; if (!Number.isFinite(x)) return; }
-        set(S, path, x); queueSave();
-      });
-    });
-  }
-  function scalePv() { document.querySelectorAll('.pvwrap').forEach(w => { w.querySelector('iframe').style.transform = `scale(${w.clientWidth / 1920})`; }); }
-  addEventListener('resize', scalePv);
-
-  function live() {
-    document.querySelectorAll('[data-live="sens"]').forEach(e => { e.textContent = P.last.sens || '–'; });
-    document.querySelectorAll('[data-live="crosshair"]').forEach(e => { e.textContent = P.last.crosshair || '–'; });
-    document.querySelectorAll('[data-last]').forEach(b => { b.disabled = !P.last[b.dataset.last]; });
-    const d = P.draw, n = d.n, k = d.k, busy = Date.now() < d.until;
-    const bd = $('#bdraw'); if (bd) { bd.disabled = busy; bd.textContent = busy ? 'Drawing…' : !n ? 'Draw first player' : k >= n ? 'New draw' : `Draw player ${k + 1} of ${n}`; }
-    const br = $('#breset'); if (br) br.disabled = busy;
-    const bs = $('#bstat'); if (bs) bs.textContent = n ? `${k}/${n} drawn` : '';
-    const bm = $('#bmatches'); if (bm) bm.innerHTML = matchesHtml();
-  }
-
-  function route() {
-    const m = location.pathname.match(/^\/s\/[\w-]+\/?(\w+)?/);
-    cur = m && m[1] && Object.hasOwn(views, m[1]) ? m[1] : 'home';
-    $('#nav').innerHTML = NAV.map(([k, l]) => `<a href="${k === 'home' ? BASE : BASE + '/' + k}" data-go class="${k === cur ? 'on' : ''}">${l}</a>`).join('');
-    $('#view').innerHTML = views[cur]();
-    bind(); scalePv(); live();
-  }
-  function go(href) { history.pushState(null, '', href); route(); scrollTo(0, 0); }
-  addEventListener('popstate', route);
-
-  document.addEventListener('click', async e => {
-    const a = e.target.closest('a[data-go]');
-    if (a) { e.preventDefault(); go(a.getAttribute('href')); return; }
-    const b = e.target.closest('button'); if (!b) return;
-    const d = b.dataset;
-    if (d.copy) return copy(d.copy, b);
-    if (d.pack) {
-      try { const t = await (await fetch(`/api/s/${ID}/streamerbot?base=${encodeURIComponent(ORIGIN)}`)).text(); copy(t, b); } catch (err) { note(err.message, 4000); }
-      return;
-    }
-    if (d.last) return copy(P.last[d.last], b);
-    if (d.win) { const [r, m, s] = d.win.split(',').map(Number); return trig('win', { r, m, s }); }
-    if (d.preset) { const [ac, bg, tx] = d.preset.split(','); Object.assign(S.theme, { accent: ac, bg, text: tx }); queueSave(); return route(); }
-    if (d.resetlist) { try { const df = await api('GET', '/api/defaults'); S[d.resetlist] = df[d.resetlist]; queueSave(); route(); } catch (err) { note(err.message, 4000); } return; }
-    if (d.rotate) {
-      if (!confirm('Reset the overlay links? Your OBS sources will stop working until you paste the new links.')) return;
-      try { const j = await api('POST', `/api/s/${ID}/rotate-overlay`); P.ov = j.ov; route(); note('Overlay links reset. Update OBS.', 5000); } catch (err) { note(err.message, 4000); }
-      return;
-    }
-    if (d.t) { if (d.confirm && !confirm(d.confirm)) return; trig(d.t); }
+/* ---------- http ---------- */
+const send = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
+const notFound = res => { res.writeHead(404, { 'Content-Type': 'text/html' }); res.end('<body style="font:16px system-ui;background:#0f1923;color:#ece8e1;padding:40px"><h2>Not found</h2><p>That link is not valid. If it was your overlay link, it may have been reset.</p><p><a style="color:#ff4655" href="/">ValoTools home</a></p>'); };
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
+function file(res, name, extra) {
+  fs.readFile(path.join(PUB, name), (e, buf) => {
+    if (e) return notFound(res);
+    res.writeHead(200, { 'Content-Type': TYPES[path.extname(name)] || 'text/plain', 'Cache-Control': 'no-cache', ...extra });
+    res.end(buf);
   });
+}
+const readBody = req => new Promise((ok, no) => {
+  let n = 0; const c = [];
+  req.on('data', d => { n += d.length; if (n > 65536) { no(Object.assign(new Error('Body too large'), { status: 413 })); req.destroy(); } else c.push(d); });
+  req.on('end', () => { try { ok(n ? JSON.parse(Buffer.concat(c).toString()) : {}); } catch { no(Object.assign(new Error('Bad JSON'), { status: 400 })); } });
+  req.on('error', no);
+});
+const hits = new Map();
+function limited(key, max, windowMs) {
+  const now = Date.now(), a = (hits.get(key) || []).filter(t => now - t < windowMs);
+  if (a.length >= max) { hits.set(key, a); return true; }
+  a.push(now); hits.set(key, a); return false;
+}
+setInterval(() => { const now = Date.now(); for (const [k, a] of hits) if (!a.some(t => now - t < 3600000)) hits.delete(k); }, 600000).unref();
+const clientIp = req => (TRUST_PROXY && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket.remoteAddress;
+const publicState = sp => ({ id: sp.id, ov: sp.ov, settings: sp.settings, last: sp.last, ...brState(sp) });
 
-  /* ---------- live updates from the server ---------- */
-  function connect() {
-    const es = new EventSource(`/api/s/${ID}/events`); let first = true;
-    es.onopen = async () => {
-      if (first) { first = false; return; }
-      try { const j = await api('GET', `/api/s/${ID}/state`); P.last = j.last; P.bracket = j.bracket; P.draw = j.draw; live(); } catch { /* ignore */ }
-    };
-    es.onmessage = e => {
-      let m; try { m = JSON.parse(e.data); } catch { return; }
-      if (m.t === 'show') {
-        const r = m.r;
-        if (r.k === 'sens') P.last.sens = r.big;
-        if (r.k === 'crosshair') P.last.crosshair = r.code;
-        if (r.wheel) { P.draw.until = Date.now() + r.dur; setTimeout(live, r.dur + 150); }
-        live();
-      } else if (m.t === 'bracket') { P.bracket = m.bracket; P.draw = m.draw; live(); }
-    };
+async function handle(req, res) {
+  const u = new URL(req.url, 'http://x'), p = u.pathname, m = req.method;
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  let a;
+  if (m === 'GET' && p === '/') return file(res, 'index.html');
+  if (p === '/favicon.ico') { res.writeHead(204); return res.end(); }
+  if (m === 'GET' && (a = p.match(/^\/static\/([\w.-]+)$/))) return STATIC.has(a[1]) ? file(res, a[1]) : notFound(res);
+  if (m === 'GET' && (a = p.match(/^\/s\/([\w-]+)(?:\/(\w+))?\/?$/))) return spaces.has(a[1]) ? file(res, 'panel.html', { 'X-Robots-Tag': 'noindex' }) : notFound(res);
+  if (m === 'GET' && (a = p.match(/^\/o\/([\w-]+)(?:\/(\w+))?\/?$/))) return byOv.has(a[1]) ? file(res, 'overlay.html', { 'X-Robots-Tag': 'noindex' }) : notFound(res);
+
+  if (p === '/api/defaults' && m === 'GET') return send(res, 200, defaults());
+  if (p === '/api/spaces' && m === 'POST') {
+    if (spaces.size >= MAX_SPACES) return send(res, 503, { error: 'This server is full' });
+    if (limited('new:' + clientIp(req), 10, 3600000)) return send(res, 429, { error: 'Too many spaces created, try again later' });
+    const sp = { id: rid(18), ov: rid(12), created: Date.now(), owner: null, settings: defaults(), last: { sens: null, crosshair: null }, draw: { all: [], order: [] }, bracket: null };
+    spaces.set(sp.id, sp); byOv.set(sp.ov, sp); save(sp);
+    return send(res, 201, { id: sp.id, ov: sp.ov });
   }
+  if ((a = p.match(/^\/api\/o\/([\w-]+)\/(state|events)$/)) && m === 'GET') {
+    const sp = byOv.get(a[1]); if (!sp) return send(res, 404, { error: 'Unknown overlay' });
+    if (a[2] === 'events') return subscribe(sp.ov, req, res);
+    return send(res, 200, { settings: ovSettings(sp.settings), ...brState(sp) });
+  }
+  if ((a = p.match(/^\/api\/s\/([\w-]+)\/(state|settings|events|rotate-overlay|streamerbot)$/))) {
+    const sp = spaces.get(a[1]); if (!sp) return send(res, 404, { error: 'Unknown space' });
+    if (a[2] === 'events' && m === 'GET') return subscribe(sp.id, req, res);
+    if (a[2] === 'state' && m === 'GET') return send(res, 200, publicState(sp));
+    if (a[2] === 'streamerbot' && m === 'GET') {
+      let base = u.searchParams.get('base') || '';
+      if (!/^https?:\/\/[\w.-]+(:\d+)?$/.test(base)) base = `${TRUST_PROXY ? (req.headers['x-forwarded-proto'] || 'https') : 'http'}://${req.headers.host}`;
+      const h = { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' };
+      if (u.searchParams.get('download') === '1') h['Content-Disposition'] = 'attachment; filename="valotools-streamerbot-actions.txt"';
+      res.writeHead(200, h); return res.end(sbPack(base, sp.id));
+    }
+    if (a[2] === 'settings' && m === 'PUT') {
+      sp.settings = sanitize(await readBody(req), sp.settings); save(sp);
+      emitTo(sp.id, { t: 'settings', settings: sp.settings });
+      emitTo(sp.ov, { t: 'settings', settings: ovSettings(sp.settings) });
+      return send(res, 200, { ok: true, settings: sp.settings });
+    }
+    if (a[2] === 'rotate-overlay' && m === 'POST') {
+      const old = sp.ov; byOv.delete(old); sp.ov = rid(12); byOv.set(sp.ov, sp); save(sp);
+      for (const r of subs.get(old) || []) r.end(); subs.delete(old);
+      return send(res, 200, { ov: sp.ov });
+    }
+    return send(res, 405, { error: 'Method not allowed' });
+  }
+  if ((a = p.match(/^\/api\/t\/([\w-]+)\/(\w+)$/)) && (m === 'GET' || m === 'POST')) {
+    const sp = spaces.get(a[1]); if (!sp) return send(res, 404, { error: 'Unknown space' });
+    if (limited('t:' + sp.id, 60, 60000)) return send(res, 429, { error: 'Slow down, too many triggers' });
+    const out = trigger(sp, a[2], m === 'POST' ? await readBody(req) : {});
+    if (m === 'GET' || u.searchParams.get('text') === '1') { res.writeHead(out.err ? out.code : 200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end(out.err || out.text || 'ok'); }
+    return out.err ? send(res, out.code, { error: out.err }) : send(res, 200, { ok: true, text: out.text });
+  }
+  return notFound(res);
+}
 
-  (async () => {
-    try {
-      P = await api('GET', `/api/s/${ID}/state`); S = P.settings;
-      try { let l = JSON.parse(localStorage.vt_spaces || '[]'); localStorage.vt_spaces = JSON.stringify([ID, ...l.filter(x => x !== ID)].slice(0, 5)); } catch { /* ignore */ }
-      route(); connect();
-    } catch (e) { $('#view').innerHTML = `<div class="notice">Could not load this space: ${esc(e.message)}</div>`; }
-  })();
-})();
+http.createServer((req, res) => {
+  handle(req, res).catch(e => {
+    if (e.status) return send(res, e.status, { error: e.message });
+    console.error(e); if (!res.headersSent) send(res, 500, { error: 'Server error' }); else res.end();
+  });
+}).listen(PORT, () => console.log(`ValoTools running on http://localhost:${PORT}  (data in ${DATA})`));
