@@ -1,4 +1,4 @@
-'use strict';
+
 /* ValoTools server. No dependencies, needs Node 18+.
  * Every streamer gets a "space" with two secret tokens:
  *   id  -> control link   /s/<id>            (settings, panel, trigger URLs)
