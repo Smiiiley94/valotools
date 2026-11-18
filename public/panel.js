@@ -132,18 +132,20 @@ ${urlsPanel('bracket', [['Draw next player', 'draw'], ['Show bracket', 'bracket'
       return `<h1>Chat & Streamer.bot</h1>
 <p class="m">Every tool has a trigger link. Calling it rolls the tool and shows it on your overlay, so commands and channel point redeems work without this page open. Keep the links private: anyone with one can fire your overlays.</p>
 <div class="panel"><h2>Streamer.bot setup</h2>
+ <p style="margin-top:0"><b>Quick start:</b> import ready-made actions with your links already filled in.</p>
+ <div class="row"><button data-pack="copy">Copy import code</button><a href="/api/s/${ID}/streamerbot?base=${encodeURIComponent(ORIGIN)}&download=1" download>Download as .txt</a></div>
  <ol class="steps">
-  <li>Create an Action, for example "Valo Agent".</li>
-  <li>Add the sub-action <b>Fetch URL</b> (Core → Network) and paste the trigger link for that tool from below.</li>
-  <li>Add a trigger: <b>Core → Commands → Command</b> (for example <code>!agent</code>) or <b>Twitch → Channel Reward → Reward Redeemed</b>.</li>
-  <li>Right-click the action and choose <b>Test Trigger</b>. Your overlay should react.</li>
+  <li>In Streamer.bot click <b>Import</b> (at the top), paste the code and click Import.</li>
+  <li>Chat commands are included: <code>!agent</code>, <code>!sens</code>, <code>!crosshair</code> and <code>!strat</code>, open to everyone. Set cooldowns or limit them to mods in the <b>Commands</b> tab. The bracket actions have no command, so run them from this panel, or add your own trigger such as <b>Twitch → Channel Reward → Reward Redeemed</b>.</li>
+  <li>Right-click an action and choose <b>Test Trigger</b>. Your overlay should react.</li>
+  <li>Optional: each action has a Delay and a Send Message step that are switched off. Tick them to post the result in chat.</li>
  </ol>
- <details><summary ${sum}>Optional: post the result in chat</summary>
-  <p class="m">The link answers with the result as plain text, for example "Jett".</p>
+ <details><summary ${sum}>Set up by hand instead</summary>
   <ol class="steps">
-   <li>In Fetch URL, type a name in the <b>Variable Name</b> box, for example <code>agentResult</code>.</li>
-   <li>Add <b>Core → Delay</b> (about 2000 ms, or 7000 ms for the bracket draw) so chat doesn't spoil the animation.</li>
-   <li>Add <b>Twitch → Chat → Send Message</b>: <code>@%user% your agent is %agentResult%</code>. The name must match the Variable Name exactly.</li>
+   <li>Create an Action, for example "Valo Agent".</li>
+   <li>Add the sub-action <b>Fetch URL</b> (Core → Network) and paste the trigger link for that tool from below.</li>
+   <li>Add a trigger, then right-click the action and choose <b>Test Trigger</b>.</li>
+   <li>To post the result in chat: type a name in the <b>Variable Name</b> box of Fetch URL, for example <code>agentResult</code>. Add <b>Core → Delay</b> (about 2000 ms, or 7000 ms for the bracket draw), then <b>Twitch → Chat → Send Message</b> with <code>@%user% your agent is %agentResult%</code>. The name must match exactly.</li>
   </ol>
  </details>
 </div>
@@ -199,6 +201,10 @@ ${urlsPanel('bracket', [['Draw next player', 'draw'], ['Show bracket', 'bracket'
     const b = e.target.closest('button'); if (!b) return;
     const d = b.dataset;
     if (d.copy) return copy(d.copy, b);
+    if (d.pack) {
+      try { const t = await (await fetch(`/api/s/${ID}/streamerbot?base=${encodeURIComponent(ORIGIN)}`)).text(); copy(t, b); } catch (err) { note(err.message, 4000); }
+      return;
+    }
     if (d.last) return copy(P.last[d.last], b);
     if (d.win) { const [r, m, s] = d.win.split(',').map(Number); return trig('win', { r, m, s }); }
     if (d.preset) { const [ac, bg, tx] = d.preset.split(','); Object.assign(S.theme, { accent: ac, bg, text: tx }); queueSave(); return route(); }
