@@ -247,7 +247,7 @@ async function handle(req, res) {
     const sp = spaces.get(a[1]); if (!sp) return send(res, 404, { error: 'Unknown space' });
     if (limited('t:' + sp.id, 60, 60000)) return send(res, 429, { error: 'Slow down, too many triggers' });
     const out = trigger(sp, a[2], m === 'POST' ? await readBody(req) : {});
-    if (u.searchParams.get('text') === '1') { res.writeHead(out.err ? out.code : 200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end(out.err || out.text || 'ok'); }
+    if (m === 'GET' || u.searchParams.get('text') === '1') { res.writeHead(out.err ? out.code : 200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end(out.err || out.text || 'ok'); }
     return out.err ? send(res, out.code, { error: out.err }) : send(res, 200, { ok: true, text: out.text });
   }
   return notFound(res);
