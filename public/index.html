@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ValoTools – Valorant streamer toolkit</title>
+<meta name="description" content="Random agent, sens, crosshair, strat roulette and a 1v1 bracket with a lucky wheel, each with its own OBS overlay.">
+<link rel="stylesheet" href="/static/style.css"></head>
+<body>
+<header><a class="logo" href="/">Valo<b>Tools</b></a></header>
+<main>
+ <div class="hero">
+  <h1>Chaos tools for <span style="color:var(--red)">Valorant</span> streams</h1>
+  <p>Random agent, random sens, random crosshair, strat roulette and a 1v1 bracket with a lucky wheel draw. Every tool has its own OBS overlay that you can style, and everything can be triggered by chat commands or channel point redeems.</p>
+  <div class="row" style="justify-content:center">
+   <button class="cta" id="create">Create my space</button>
+  </div>
+  <div id="mine" class="m" style="margin-top:12px"></div>
+  <p class="m">No account needed. You get a private control link. Anyone with that link can control your overlays, so keep it to yourself.</p>
+ </div>
+ <div class="tiles">
+  <div class="tile"><i>🏆</i><b>1v1 Bracket</b><span>Draw players one by one on a lucky wheel, then run the matches live.</span></div>
+  <div class="tile"><i>🎭</i><b>Random agent</b><span>Edit the list and spin.</span></div>
+  <div class="tile"><i>🖱️</i><b>Random sens</b><span>Pick your range and roll an in-game sens.</span></div>
+  <div class="tile"><i>🎯</i><b>Random crosshair</b><span>Spin through crosshairs and copy the code.</span></div>
+  <div class="tile"><i>🎲</i><b>Strat roulette</b><span>Your own list of chaos challenges.</span></div>
+  <div class="tile"><i>🎨</i><b>Your colors</b><span>Accent, background, text, font and position.</span></div>
+ </div>
+</main>
+<script>
+const mine=document.getElementById('mine');
+try{const l=JSON.parse(localStorage.vt_spaces||'[]');if(l.length)mine.innerHTML='Welcome back: <a href="/s/'+l[0]+'">open my space</a>'}catch{}
+document.getElementById('create').onclick=async function(){
+ this.disabled=true;this.textContent='Creating…';
+ try{
+  const r=await fetch('/api/spaces',{method:'POST'});const j=await r.json();
+  if(!r.ok)throw new Error(j.error||'Failed');
+  let l=[];try{l=JSON.parse(localStorage.vt_spaces||'[]')}catch{}
+  localStorage.vt_spaces=JSON.stringify([j.id,...l.filter(x=>x!==j.id)].slice(0,5));
+  location.href='/s/'+j.id+'?new=1';
+ }catch(e){alert(e.message);this.disabled=false;this.textContent='Create my space'}
+};
+</script>
+</body></html>

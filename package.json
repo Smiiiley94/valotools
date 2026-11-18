@@ -1,0 +1,9 @@
+{
+  "name": "valotools",
+  "version": "1.0.0",
+  "description": "Random draw tools and overlays for Valorant streamers",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" },
+  "license": "MIT"
+}
