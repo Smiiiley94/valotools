@@ -183,11 +183,12 @@ function sbPack(base, id) {
   const Q = '00000000-0000-0000-0000-000000000000';
   const sub = (type, fields, index, enabled = true) => ({ ...fields, id: crypto.randomUUID(), weight: 0.0, type, parentId: null, enabled, index });
   const commands = [];
+  const MODS = new Set(['!draw', '!bracket', '!hide', '!reset']); // mods-only commands
   const action = (name, subActions, cmd) => {
     const triggers = [];
     if (cmd) {
       const cid = crypto.randomUUID();
-      commands.push({ id: cid, name, enabled: true, include: false, mode: 0, command: cmd, regexExplicitCapture: false, location: 0, ignoreBotAccount: true, ignoreInternal: true, sources: 1, persistCounter: false, persistUserCounter: false, caseSensitive: false, globalCooldown: 0, userCooldown: 0, group: null, grantType: 0, permittedUsers: [], permittedGroups: [] });
+      commands.push({ id: cid, name, enabled: true, include: false, mode: 0, command: cmd, regexExplicitCapture: false, location: 0, ignoreBotAccount: true, ignoreInternal: true, sources: 1, persistCounter: false, persistUserCounter: false, caseSensitive: false, globalCooldown: 0, userCooldown: 0, group: 'ValoTools', grantType: 0, permittedUsers: [], permittedGroups: MODS.has(cmd) ? ['Moderators'] : [] });
       triggers.push({ commandId: cid, id: crypto.randomUUID(), type: 401, enabled: true, exclusions: [] });
     }
     return { id: crypto.randomUUID(), queue: Q, enabled: true, excludeFromHistory: false, excludeFromPending: false, name, group: 'ValoTools', alwaysRun: false, randomAction: false, concurrent: false, triggers, subActions, collapsedGroups: [] };
@@ -198,14 +199,14 @@ function sbPack(base, id) {
     ['Valo Sens', 'sens', 'sensResult', '@%user% your sens is %sensResult%', 2000, '!sens'],
     ['Valo Crosshair', 'crosshair', 'crosshairResult', '@%user% your crosshair code is %crosshairResult%', 2000, '!crosshair'],
     ['Valo Strat Roulette', 'strat', 'stratResult', '@%user% your strat is %stratResult%', 2000, '!strat'],
-    ['Valo Bracket Draw', 'draw', 'drawResult', '%drawResult% was drawn!', 7000, null]
+    ['Valo Bracket Draw', 'draw', 'drawResult', '%drawResult% was drawn!', 7000, '!draw']
   ].map(([name, tool, v, text, ms, cmd]) => action(name, [
     fetchSub(tool, v, 0),
     sub(1002, { value: String(ms), maxValue: null, random: false }, 1, false),
     sub(10, { text, pin: false, pinToStreamEnd: false, useBot: true, fallback: true }, 2, false)
   ], cmd));
-  const plain = [['Valo Show Bracket', 'bracket'], ['Valo Hide Overlay', 'hide'], ['Valo Reset Bracket', 'reset']]
-    .map(([name, tool]) => action(name, [fetchSub(tool, 'valoResult', 0)]));
+  const plain = [['Valo Show Bracket', 'bracket', '!bracket'], ['Valo Hide Overlay', 'hide', '!hide'], ['Valo Reset Bracket', 'reset', '!reset']]
+    .map(([name, tool, cmd]) => action(name, [fetchSub(tool, 'valoResult', 0)], cmd));
   const pack = {
     meta: { name: 'ValoTools', author: 'ValoTools', version: '1.0.0', description: 'Actions for ValoTools overlays', autoRunAction: null, minimumVersion: null },
     data: { actions: [...chat, ...plain], queues: [], commands, websocketServers: [], websocketClients: [], timers: [] },
