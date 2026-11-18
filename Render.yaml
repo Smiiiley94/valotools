@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: valotools
+    runtime: docker
+    plan: starter
+    healthCheckPath: /
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: TRUST_PROXY
+        value: "1"
+    disk:
+      name: valotools-data
+      mountPath: /data
+      sizeGB: 1
