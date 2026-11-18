@@ -136,6 +136,15 @@ ${urlsPanel('bracket', [['Draw next player', 'draw'], ['Show bracket', 'bracket'
   <li>Add a trigger: <b>Core → Commands → Command</b> (for example <code>!agent</code>) or <b>Twitch → Channel Reward → Reward Redeemed</b>.</li>
   <li>Right-click the action and choose <b>Test Trigger</b>. Your overlay should react.</li>
  </ol></div>
+<div class="panel"><h2>Announce the result in chat</h2>
+ <p class="m">Add <code>?text=1</code> to a trigger link and it answers with just the result, for example "Jett", so your bot can post it in chat.</p>
+ <ol class="steps">
+  <li>In the <b>Fetch URL</b> sub-action, use the "chat answer" link from the list below instead of the normal trigger link. Look for a field that stores the answer in a variable and call it, for example, <code>agentResult</code>. The field may be named differently in your version.</li>
+  <li>Add a <b>Core → Delay</b> sub-action after it, so chat doesn't spoil the animation: about <b>2000 ms</b> for agent, sens, crosshair and strat, and about <b>7000 ms</b> for the bracket draw (the wheel spins for about 7 seconds).</li>
+  <li>Add <b>Twitch → Chat → Send Message</b> after that, for example: <code>@%user% your agent is %agentResult%</code></li>
+ </ol>
+ ${[['agent', 'Agent'], ['sens', 'Sens'], ['crosshair', 'Crosshair'], ['strat', 'Strat roulette'], ['draw', 'Bracket draw (the drawn player)']].map(([t, l]) => urlRow(l + ' (chat answer)', trUrl(t) + '?text=1')).join('')}
+</div>
 <div class="panel"><h2>Trigger links</h2>${rows.map(([t, l]) => urlRow(l, trUrl(t))).join('')}
  <div class="m" style="margin-top:8px"><b>Chat bots:</b> add <code>?text=1</code> to a link and it answers with plain text (for example "Jett"). Nightbot, StreamElements and Fossabot custom commands can fetch a link and post the answer. The syntax differs per bot, so check your bot's docs.</div></div>
 <div class="panel"><h2>Links</h2>${urlRow('Your control link', ORIGIN + BASE)}
