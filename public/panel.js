@@ -139,9 +139,9 @@ ${urlsPanel('bracket', [['Draw next player', 'draw'], ['Show bracket', 'bracket'
 <div class="panel"><h2>Announce the result in chat</h2>
  <p class="m">Add <code>?text=1</code> to a trigger link and it answers with just the result, for example "Jett", so your bot can post it in chat.</p>
  <ol class="steps">
-  <li>In the <b>Fetch URL</b> sub-action, use the "chat answer" link from the list below instead of the normal trigger link. Look for a field that stores the answer in a variable and call it, for example, <code>agentResult</code>. The field may be named differently in your version.</li>
+  <li>In the <b>Fetch URL</b> sub-action, paste the "chat answer" link from the list below into the <b>URL</b> box. Then type a name of your choice into the <b>Variable Name</b> box, for example <code>agentResult</code>, without percent signs. Fetch URL saves the answer under that name. Leave both switches (Parse Results as JSON and Auto-Type) off.</li>
   <li>Add a <b>Core → Delay</b> sub-action after it, so chat doesn't spoil the animation: about <b>2000 ms</b> for agent, sens, crosshair and strat, and about <b>7000 ms</b> for the bracket draw (the wheel spins for about 7 seconds).</li>
-  <li>Add <b>Twitch → Chat → Send Message</b> after that, for example: <code>@%user% your agent is %agentResult%</code></li>
+  <li>Add <b>Twitch → Chat → Send Message</b> after that, for example: <code>@%user% your agent is %agentResult%</code>. Write the variable name between percent signs, spelled exactly like in the <b>Variable Name</b> box. If it doesn't match, the message comes out blank.</li>
  </ol>
  ${[['agent', 'Agent'], ['sens', 'Sens'], ['crosshair', 'Crosshair'], ['strat', 'Strat roulette'], ['draw', 'Bracket draw (the drawn player)']].map(([t, l]) => urlRow(l + ' (chat answer)', trUrl(t) + '?text=1')).join('')}
 </div>
