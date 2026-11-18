@@ -6,6 +6,7 @@
  * `owner` is reserved on each space so accounts can be added later without
  * changing the URLs people already use. */
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
+const { gzipSync } = require('zlib');
 
 const PORT = +process.env.PORT || 3000;
 const DATA = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -174,6 +175,45 @@ function trigger(sp, tool, body) {
   }
 }
 
+/* ---------- Streamer.bot import pack ----------
+ * Format copied from a real Streamer.bot export: base64("SBAE" + gzip(json)).
+ * Sub-action types: 1007 = Fetch URL, 1002 = Delay, 10 = Twitch chat message.
+ * Trigger type 401 = Command (points at an entry in data.commands). */
+function sbPack(base, id) {
+  const Q = '00000000-0000-0000-0000-000000000000';
+  const sub = (type, fields, index, enabled = true) => ({ ...fields, id: crypto.randomUUID(), weight: 0.0, type, parentId: null, enabled, index });
+  const commands = [];
+  const action = (name, subActions, cmd) => {
+    const triggers = [];
+    if (cmd) {
+      const cid = crypto.randomUUID();
+      commands.push({ id: cid, name, enabled: true, include: false, mode: 0, command: cmd, regexExplicitCapture: false, location: 0, ignoreBotAccount: true, ignoreInternal: true, sources: 1, persistCounter: false, persistUserCounter: false, caseSensitive: false, globalCooldown: 0, userCooldown: 0, group: null, grantType: 0, permittedUsers: [], permittedGroups: [] });
+      triggers.push({ commandId: cid, id: crypto.randomUUID(), type: 401, enabled: true, exclusions: [] });
+    }
+    return { id: crypto.randomUUID(), queue: Q, enabled: true, excludeFromHistory: false, excludeFromPending: false, name, group: 'ValoTools', alwaysRun: false, randomAction: false, concurrent: false, triggers, subActions, collapsedGroups: [] };
+  };
+  const fetchSub = (tool, v, i) => sub(1007, { url: `${base}/api/t/${id}/${tool}`, variableName: v, headers: {}, parseAsJson: false, autoType: false }, i);
+  const chat = [
+    ['Valo Agent', 'agent', 'agentResult', '@%user% your agent is %agentResult%', 2000, '!agent'],
+    ['Valo Sens', 'sens', 'sensResult', '@%user% your sens is %sensResult%', 2000, '!sens'],
+    ['Valo Crosshair', 'crosshair', 'crosshairResult', '@%user% your crosshair code is %crosshairResult%', 2000, '!crosshair'],
+    ['Valo Strat Roulette', 'strat', 'stratResult', '@%user% your strat is %stratResult%', 2000, '!strat'],
+    ['Valo Bracket Draw', 'draw', 'drawResult', '%drawResult% was drawn!', 7000, null]
+  ].map(([name, tool, v, text, ms, cmd]) => action(name, [
+    fetchSub(tool, v, 0),
+    sub(1002, { value: String(ms), maxValue: null, random: false }, 1, false),
+    sub(10, { text, pin: false, pinToStreamEnd: false, useBot: true, fallback: true }, 2, false)
+  ], cmd));
+  const plain = [['Valo Show Bracket', 'bracket'], ['Valo Hide Overlay', 'hide'], ['Valo Reset Bracket', 'reset']]
+    .map(([name, tool]) => action(name, [fetchSub(tool, 'valoResult', 0)]));
+  const pack = {
+    meta: { name: 'ValoTools', author: 'ValoTools', version: '1.0.0', description: 'Actions for ValoTools overlays', autoRunAction: null, minimumVersion: null },
+    data: { actions: [...chat, ...plain], queues: [], commands, websocketServers: [], websocketClients: [], timers: [] },
+    version: 24, exportedFrom: '1.0.7', minimumVersion: '1.0.0-alpha.1'
+  };
+  return Buffer.concat([Buffer.from('SBAE'), gzipSync(JSON.stringify(pack))]).toString('base64');
+}
+
 /* ---------- http ---------- */
 const send = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
 const notFound = res => { res.writeHead(404, { 'Content-Type': 'text/html' }); res.end('<body style="font:16px system-ui;background:#0f1923;color:#ece8e1;padding:40px"><h2>Not found</h2><p>That link is not valid. If it was your overlay link, it may have been reset.</p><p><a style="color:#ff4655" href="/">ValoTools home</a></p>'); };
@@ -226,10 +266,17 @@ async function handle(req, res) {
     if (a[2] === 'events') return subscribe(sp.ov, req, res);
     return send(res, 200, { settings: ovSettings(sp.settings), ...brState(sp) });
   }
-  if ((a = p.match(/^\/api\/s\/([\w-]+)\/(state|settings|events|rotate-overlay)$/))) {
+  if ((a = p.match(/^\/api\/s\/([\w-]+)\/(state|settings|events|rotate-overlay|streamerbot)$/))) {
     const sp = spaces.get(a[1]); if (!sp) return send(res, 404, { error: 'Unknown space' });
     if (a[2] === 'events' && m === 'GET') return subscribe(sp.id, req, res);
     if (a[2] === 'state' && m === 'GET') return send(res, 200, publicState(sp));
+    if (a[2] === 'streamerbot' && m === 'GET') {
+      let base = u.searchParams.get('base') || '';
+      if (!/^https?:\/\/[\w.-]+(:\d+)?$/.test(base)) base = `${TRUST_PROXY ? (req.headers['x-forwarded-proto'] || 'https') : 'http'}://${req.headers.host}`;
+      const h = { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' };
+      if (u.searchParams.get('download') === '1') h['Content-Disposition'] = 'attachment; filename="valotools-streamerbot-actions.txt"';
+      res.writeHead(200, h); return res.end(sbPack(base, sp.id));
+    }
     if (a[2] === 'settings' && m === 'PUT') {
       sp.settings = sanitize(await readBody(req), sp.settings); save(sp);
       emitTo(sp.id, { t: 'settings', settings: sp.settings });
