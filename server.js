@@ -14,7 +14,13 @@ const PUB = path.join(__dirname, 'public');
 const MAX_SPACES = +process.env.MAX_SPACES || 10000;
 const TRUST_PROXY = process.env.TRUST_PROXY === '1';
 const STATIC = new Set(['style.css', 'panel.js', 'overlay.js', 'overlay.css']);
-fs.mkdirSync(DATA, { recursive: true });
+/* Storage: Upstash Redis (REST) when both variables are set, otherwise JSON files in DATA_DIR. */
+const clean = v => String(v || '').trim().replace(/^["']+|["']+$/g, '').trim(); // tolerate quotes pasted around the value
+const REDIS_URL = clean(process.env.UPSTASH_REDIS_REST_URL).replace(/\/+$/, '');
+const REDIS_TOKEN = clean(process.env.UPSTASH_REDIS_REST_TOKEN);
+const useRedis = !!(REDIS_URL && REDIS_TOKEN);
+const KEY = 'vt:space:';
+if (!useRedis) fs.mkdirSync(DATA, { recursive: true });
 
 const rid = n => crypto.randomBytes(n).toString('base64url');
 const pick = a => a[crypto.randomInt(a.length)];
@@ -61,16 +67,58 @@ const ovSettings = s => ({ theme: s.theme, duration: s.duration, position: s.pos
 
 /* ---------- storage ---------- */
 const spaces = new Map(), byOv = new Map();
-for (const f of fs.readdirSync(DATA)) {
-  if (!/^[\w-]+\.json$/.test(f)) continue;
-  try { const sp = JSON.parse(fs.readFileSync(path.join(DATA, f), 'utf8')); spaces.set(sp.id, sp); byOv.set(sp.ov, sp); }
-  catch { console.error('skipping unreadable', f); }
+const ser = sp => JSON.stringify(sp, (k, v) => k[0] === '_' ? undefined : v);
+const index = sp => { spaces.set(sp.id, sp); byOv.set(sp.ov, sp); };
+
+async function redis(cmd) {
+  const r = await fetch(REDIS_URL, { method: 'POST', headers: { Authorization: 'Bearer ' + REDIS_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(cmd), signal: AbortSignal.timeout(10000) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) throw new Error(j.error || 'Redis answered HTTP ' + r.status);
+  return j.result;
+}
+
+async function loadAll() {
+  if (!useRedis) {
+    for (const f of fs.readdirSync(DATA)) {
+      if (!/^[\w-]+\.json$/.test(f)) continue;
+      try { index(JSON.parse(fs.readFileSync(path.join(DATA, f), 'utf8'))); }
+      catch { console.error('skipping unreadable', f); }
+    }
+    return;
+  }
+  const keys = new Set(); let cur = '0';
+  do { const [next, ks] = await redis(['SCAN', cur, 'MATCH', KEY + '*', 'COUNT', '500']); cur = String(next); ks.forEach(k => keys.add(k)); } while (cur !== '0');
+  const all = [...keys];
+  for (let i = 0; i < all.length; i += 100) {
+    const vals = await redis(['MGET', ...all.slice(i, i + 100)]);
+    for (const v of vals) { if (!v) continue; try { index(JSON.parse(v)); } catch { console.error('skipping unreadable space in Redis'); } }
+  }
+}
+
+// Redis saves are grouped: many changes within one second become a single write.
+const pending = new Map();
+async function flushOne(sp, tries) {
+  pending.delete(sp.id);
+  try { await redis(['SET', KEY + sp.id, ser(sp)]); }
+  catch (e) {
+    console.error('Redis save failed:', e.message);
+    if (tries < 5) pending.set(sp.id, setTimeout(() => flushOne(sp, tries + 1), 5000 * (tries + 1)));
+  }
 }
 function save(sp) {
+  if (useRedis) { if (!pending.has(sp.id)) pending.set(sp.id, setTimeout(() => flushOne(sp, 0), 1000)); return; }
   const f = path.join(DATA, sp.id + '.json'), t = f + '.tmp';
-  fs.writeFileSync(t, JSON.stringify(sp, (k, v) => k[0] === '_' ? undefined : v));
+  fs.writeFileSync(t, ser(sp));
   fs.renameSync(t, f);
 }
+async function shutdown() {
+  const todo = [...pending.keys()].map(id => spaces.get(id)).filter(Boolean);
+  for (const t of pending.values()) clearTimeout(t);
+  pending.clear();
+  await Promise.all(todo.map(sp => flushOne(sp, 99)));
+  process.exit(0);
+}
+if (useRedis) { process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown); }
 
 /* ---------- live events (SSE) ---------- */
 const subs = new Map();
@@ -301,9 +349,13 @@ async function handle(req, res) {
   return notFound(res);
 }
 
-http.createServer((req, res) => {
+const server = http.createServer((req, res) => {
   handle(req, res).catch(e => {
     if (e.status) return send(res, e.status, { error: e.message });
     console.error(e); if (!res.headersSent) send(res, 500, { error: 'Server error' }); else res.end();
   });
-}).listen(PORT, () => console.log(`ValoTools running on http://localhost:${PORT}  (data in ${DATA})`));
+});
+
+loadAll()
+  .then(() => server.listen(PORT, () => console.log(`ValoTools running on http://localhost:${PORT}  (${spaces.size} spaces, storage: ${useRedis ? 'Upstash Redis' : 'files in ' + DATA})`)))
+  .catch(e => { console.error('Could not load saved spaces:', e.message); process.exit(1); });
